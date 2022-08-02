@@ -39,7 +39,7 @@ MAX_PATHS_PER_RUN = 250
 # domain. The cache is kept in DynamoDB
 #
 MAX_PAGES_PER_DOMAIN = 25
-PAGES_PER_DOMAIN = dict()
+PAGES_PER_DOMAIN = {}
 
 REPORT_STATUS_EVERY = 5000
 
@@ -111,18 +111,15 @@ def should_process_record(record):
     if content_type is None:
         return False, None
 
-    should_process = False
     url = record.rec_headers.get_header('WARC-Target-URI')
 
-    for mime_type in PROCESS_MIME_TYPES:
-        if mime_type in content_type:
-            should_process = True
-            break
+    should_process = any(
+        mime_type in content_type for mime_type in PROCESS_MIME_TYPES
+    )
 
     if not should_process:
-        msg = 'Ignored %s due to mime type filter'
         args = (url,)
-        logger.info(msg % args)
+        logger.info(f'Ignored {args} due to mime type filter')
 
         return False, None
 
@@ -156,9 +153,7 @@ def should_process_record(record):
 
 def process_record(warc_path, record, headers, body, match_stats):
     for matcher in [aws_re_matcher, cognito_matcher]:
-        match_count = matcher(warc_path, record, headers, body)
-
-        if match_count:
+        if match_count := matcher(warc_path, record, headers, body):
             if matcher.__name__ in match_stats:
                 match_stats[matcher.__name__] += match_count
             else:
@@ -193,11 +188,13 @@ def save_match_to_s3(warc_path, record, headers, body, search_string):
     # headers is an instance of StatusAndHeaders defined in statusandheaders.py
     headers_str = headers.to_ascii_bytes()
 
-    match = dict()
-    match['search_string'] = search_string
-    match['ip_address'] = ip_address
-    match['date'] = date
-    match['headers'] = b64_encode(headers_str)
+    match = {
+        'search_string': search_string,
+        'ip_address': ip_address,
+        'date': date,
+        'headers': b64_encode(headers_str),
+    }
+
     match['body'] = b64_encode(body)
     match['url'] = b64_encode(url)
     match['warc_path'] = warc_path
@@ -205,7 +202,7 @@ def save_match_to_s3(warc_path, record, headers, body, search_string):
     search_string_hash = md5_hash(search_string)
     payload_hash = md5_hash(body)
 
-    key = '%s-%s.json.gz' % (search_string_hash, payload_hash)
+    key = f'{search_string_hash}-{payload_hash}.json.gz'
 
     data = to_json_string(match)
     data = zlib.compress(data, 8)
@@ -213,7 +210,7 @@ def save_match_to_s3(warc_path, record, headers, body, search_string):
     segment = get_segment_from_line(warc_path)
 
     s3 = boto3.resource('s3')
-    s3_object = s3.Object(MATCH_S3_BUCKET, '%s/%s/%s' % (MATCH_S3_PATH, segment, key))
+    s3_object = s3.Object(MATCH_S3_BUCKET, f'{MATCH_S3_PATH}/{segment}/{key}')
     s3_object.put(Body=data)
 
 
@@ -228,12 +225,9 @@ def b64_encode(data):
 
 
 def to_json_string(data):
-    data_str = json.dumps(data,
-                          indent=4,
-                          sort_keys=True,
-                          default=json_encoder,
-                          encoding='UTF-8')
-    return data_str
+    return json.dumps(
+        data, indent=4, sort_keys=True, default=json_encoder, encoding='UTF-8'
+    )
 
 
 def json_encoder(o):
@@ -253,10 +247,10 @@ def process_warc_archive(warc_path):
     start = time.time()
     processed_records = 0
     ignored_records = 0
-    match_stats = dict()
+    match_stats = {}
 
     fs = s3fs.S3FileSystem(anon=True)
-    warc_file = fs.open('commoncrawl/%s' % warc_path, 'rb')
+    warc_file = fs.open(f'commoncrawl/{warc_path}', 'rb')
 
     for i, record in enumerate(ArchiveIterator(warc_file, arc2warc=True)):
         _should_process_record, data = should_process_record(record)
@@ -366,8 +360,8 @@ def handle_result(result, completed_warc_paths):
         print('')
         print(warc_path)
         print('  - Time (seconds): %.2f' % spent)
-        print('  - Processed pages: %s' % processed_records)
-        print('  - Ignored pages: %s' % ignored_records)
+        print(f'  - Processed pages: {processed_records}')
+        print(f'  - Ignored pages: {ignored_records}')
         print('  - Matches: %r' % match_stats)
         print('')
 
@@ -383,7 +377,7 @@ def handle_generic_failure(future, failed_warc_paths, exc):
     if future not in failed_warc_paths:
         failed_warc_paths.add(future)
 
-        print('A future failed with error: %s' % exc)
+        print(f'A future failed with error: {exc}')
         print('')
 
         storage_config = wrenconfig.extract_storage_config(wrenconfig.default())
